@@ -5,6 +5,11 @@ import json
 from datetime import datetime
 from pytrends.request import TrendReq
 import os
+import boto3
+from dotenv import load_dotenv
+
+# Carrega as chaves secretas do arquivo .env
+load_dotenv()
 
 # ==========================================
 # SENSOR 1: SOCIAL (Google Trends)
@@ -39,7 +44,6 @@ def coletar_trends_nacional():
 # ==========================================
 def coletar_latencia_tecnica():
     print("\n[SENSOR TÉCNICO] Iniciando Teste de Latência (Ping)...")
-    
     urls_operadoras = {
         "Vivo": "https://www.vivo.com.br",
         "Claro": "https://www.claro.com.br",
@@ -47,27 +51,22 @@ def coletar_latencia_tecnica():
         "Oi": "https://www.oi.com.br"
     }
     
-    # O nosso "disfarce" para passar pelo Firewall da Vivo
     headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/91.0.4472.124 Safari/537.36'
     }
     
     resultados = []
-    
     for operadora, url in urls_operadoras.items():
         try:
-            # Agora enviamos os headers junto com a requisição
             resposta = requests.get(url, headers=headers, timeout=5)
             tempo_ms = round(resposta.elapsed.total_seconds() * 1000)
             status = resposta.status_code
-            
             resultados.append({
                 "Operadora": operadora,
                 "Status_HTTP": status,
                 "Latencia_ms": tempo_ms,
                 "Erro": "Nenhum" if status == 200 else f"HTTP {status}"
             })
-            
         except requests.exceptions.RequestException as e:
             resultados.append({
                 "Operadora": operadora,
@@ -75,22 +74,17 @@ def coletar_latencia_tecnica():
                 "Latencia_ms": 5000,
                 "Erro": "Timeout/Inacessivel"
             })
-            
     return resultados
 
 # ==========================================
-# INTEGRAÇÃO E PERSISTÊNCIA (Salvando o JSON)
+# INTEGRAÇÃO E PERSISTÊNCIA (Local e Nuvem)
 # ==========================================
-def salvar_dados_json(dados_tecnicos, df_sociais):
+def salvar_e_enviar_dados(dados_tecnicos, df_sociais):
     print("\n[PERSISTÊNCIA] Gerando arquivo JSON unificado...")
-    
-    # Cria a pasta 'dados' se ela não existir
     os.makedirs('dados', exist_ok=True)
     
-    # Pega a última linha do Google Trends (o momento atual)
     ultima_linha_social = df_sociais.iloc[-1] if not df_sociais.empty else None
     
-    # Monta o "Payload" final (O pacote de dados que vai pra AWS depois)
     payload = {
         "timestamp": datetime.now().isoformat(),
         "telemetria": []
@@ -98,7 +92,6 @@ def salvar_dados_json(dados_tecnicos, df_sociais):
     
     for item in dados_tecnicos:
         op = item["Operadora"]
-        # Pega o índice social da operadora correspondente (ou 0 se falhar)
         indice_social = int(ultima_linha_social[f'Indice_Falha_{op}']) if ultima_linha_social is not None else 0
         
         payload["telemetria"].append({
@@ -109,14 +102,32 @@ def salvar_dados_json(dados_tecnicos, df_sociais):
             "erro_tecnico": item["Erro"]
         })
         
-    # Nome do arquivo baseado na data/hora
-    nome_arquivo = f"dados/telemetria_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+    nome_arquivo = f"telemetria_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+    caminho_local = f"dados/{nome_arquivo}"
     
-    # Salva o arquivo no disco do Linux
-    with open(nome_arquivo, 'w', encoding='utf-8') as f:
+    with open(caminho_local, 'w', encoding='utf-8') as f:
         json.dump(payload, f, ensure_ascii=False, indent=4)
+    print(f"✅ Salvo localmente em: {caminho_local}")
+    
+    # --- NOVO: ENVIO PARA O AWS S3 ---
+    print("\n[CLOUD] Iniciando upload para o Amazon S3...")
+    try:
+        # Puxa as credenciais do .env invisível
+        s3_client = boto3.client(
+            's3',
+            aws_access_key_id=os.getenv('AWS_ACCESS_KEY_ID'),
+            aws_secret_access_key=os.getenv('AWS_SECRET_ACCESS_KEY'),
+            region_name=os.getenv('AWS_REGION')
+        )
         
-    print(f"✅ Sucesso! Dados salvos em: {nome_arquivo}")
+        bucket_name = os.getenv('S3_BUCKET_NAME')
+        caminho_s3 = f"raw/{nome_arquivo}" # Vai criar uma pasta 'raw' dentro do bucket
+        
+        s3_client.upload_file(caminho_local, bucket_name, caminho_s3)
+        print(f"🚀 SUCESSO! Arquivo enviado para s3://{bucket_name}/{caminho_s3}")
+        
+    except Exception as e:
+        print(f"❌ Erro ao enviar para o S3: {e}")
 
 # ==========================================
 # EXECUÇÃO PRINCIPAL
@@ -124,4 +135,4 @@ def salvar_dados_json(dados_tecnicos, df_sociais):
 if __name__ == "__main__":
     df_sociais = coletar_trends_nacional()
     dados_tecnicos = coletar_latencia_tecnica()
-    salvar_dados_json(dados_tecnicos, df_sociais)
+    salvar_e_enviar_dados(dados_tecnicos, df_sociais)
