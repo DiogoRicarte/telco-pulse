@@ -1,94 +1,107 @@
-import time
-import pandas as pd
-import requests
 import json
+import time
+import os
+import requests
 from datetime import datetime
 from pytrends.request import TrendReq
-import os
 import boto3
 from dotenv import load_dotenv
 
-# Carrega as chaves secretas do arquivo .env
 load_dotenv()
 
-# ==========================================
-# SENSOR 1: SOCIAL (Google Trends)
-# ==========================================
-pytrends = TrendReq(hl='pt-BR', tz=180, retries=3, backoff_factor=0.5)
+pytrends = TrendReq(hl='pt-BR', tz=180, timeout=(10,25))
 
-def coletar_trends_nacional():
-    print("\n[SENSOR SOCIAL] Iniciando coleta Nacional (Alta Sensibilidade)...")
-    # Termos mais amplos para captar o "ruído de fundo"
-    termos_busca = {
-        "Vivo": ["Vivo internet", "Vivo sinal", "Vivo caiu"],
-        "Claro": ["Claro internet", "Claro sinal", "Claro caiu"],
-        "TIM": ["TIM internet", "TIM sinal", "TIM caiu"],
-        "Oi": ["Oi internet", "Oi sinal", "Oi caiu"]
+def coletar_telemetria_social():
+    print("\n[SENSOR SOCIAL] Iniciando varredura Nacional e em 27 Estados...")
+    print("Aviso: Esta etapa pode levar de 5 a 7 minutos para evitar bloqueios do Google.")
+    
+    # Máximo de 5 termos por consulta (limite estrito do Google Trends)
+    termos = {
+        "Vivo": ["Vivo internet", "Vivo caiu", "Vivo fora do ar", "Vivo sem sinal", "Vivo falha"],
+        "Claro": ["Claro internet", "Claro caiu", "Claro fora do ar", "Claro sem sinal", "Claro falha"],
+        "TIM": ["TIM internet", "TIM caiu", "TIM fora do ar", "TIM sem sinal", "TIM falha"],
+        "Oi": ["Oi internet", "Oi caiu", "Oi fora do ar", "Oi sem sinal", "Oi falha"]
     }
     
-    df_final = pd.DataFrame()
-    for operadora, keywords in termos_busca.items():
-        try:
-            # Mudamos de 'now 4-H' para 'now 1-d' (Últimas 24 horas)
-            pytrends.build_payload(keywords, cat=0, timeframe='now 1-d', geo='BR')
-            df_temp = pytrends.interest_over_time()
-            if not df_temp.empty:
-                df_temp = df_temp.drop(columns=['isPartial'])
-                df_final[f'Indice_Falha_{operadora}'] = df_temp.sum(axis=1)
-                print(f"[{operadora}] Sensor captou volume de buscas!") # Log para você ver no GitHub
-            else:
-                print(f"[{operadora}] Zero buscas nas últimas 24h.")
-            time.sleep(3)
-        except Exception as e:
-            print(f"Erro ao consultar {operadora}: {e}")
-            
-    return df_final
+    # Dicionário completo do Brasil
+    regioes = {
+        'BR': 'Nacional', 
+        'BR-AC': 'AC', 'BR-AL': 'AL', 'BR-AP': 'AP', 'BR-AM': 'AM', 'BR-BA': 'BA', 
+        'BR-CE': 'CE', 'BR-DF': 'DF', 'BR-ES': 'ES', 'BR-GO': 'GO', 'BR-MA': 'MA', 
+        'BR-MT': 'MT', 'BR-MS': 'MS', 'BR-MG': 'MG', 'BR-PA': 'PA', 'BR-PB': 'PB', 
+        'BR-PR': 'PR', 'BR-PE': 'PE', 'BR-PI': 'PI', 'BR-RJ': 'RJ', 'BR-RN': 'RN', 
+        'BR-RS': 'RS', 'BR-RO': 'RO', 'BR-RR': 'RR', 'BR-SC': 'SC', 'BR-SP': 'SP', 
+        'BR-SE': 'SE', 'BR-TO': 'TO'
+    }
+    
+    resultados_sociais = {}
+    
+    for operadora, keywords in termos.items():
+        resultados_sociais[operadora] = {}
+        print(f"\nColetando dados da operadora: {operadora}")
+        
+        for geo_code, nome_regiao in regioes.items():
+            try:
+                pytrends.build_payload(keywords, cat=0, timeframe='now 1-d', geo=geo_code)
+                df = pytrends.interest_over_time()
+                
+                if not df.empty:
+                    df = df.drop(columns=['isPartial'], errors='ignore')
+                    # Soma o impacto das 5 palavras-chave
+                    valor = int(df.sum(axis=1).iloc[-1])
+                    resultados_sociais[operadora][nome_regiao] = valor
+                else:
+                    resultados_sociais[operadora][nome_regiao] = 0
+                
+                print(f"  -> {nome_regiao}: {resultados_sociais[operadora][nome_regiao]}")
+                
+                # Freio de segurança: 3 segundos de pausa para o Google não bloquear a API
+                time.sleep(3) 
+                
+            except Exception as e:
+                print(f"  -> Erro ao consultar {nome_regiao}: Bloqueio de API ou Sem Dados")
+                resultados_sociais[operadora][nome_regiao] = 0
+                time.sleep(5) # Se der erro, freia mais forte
+                
+    return resultados_sociais
 
-# ==========================================
-# SENSOR 2: TÉCNICO (Latência e Status HTTP)
-# ==========================================
-def coletar_latencia_tecnica():
-    print("\n[SENSOR TÉCNICO] Iniciando Teste de Latência (Ping)...")
-    urls_operadoras = {
+def testar_ping_operadoras():
+    print("\n[SENSOR TÉCNICO] Iniciando testes de rede...")
+    alvos = {
         "Vivo": "https://www.vivo.com.br",
         "Claro": "https://www.claro.com.br",
         "TIM": "https://www.tim.com.br",
         "Oi": "https://www.oi.com.br"
     }
-    
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/91.0.4472.124 Safari/537.36'
-    }
-    
     resultados = []
-    for operadora, url in urls_operadoras.items():
+    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
+    
+    for operadora, url in alvos.items():
         try:
+            inicio = time.time()
             resposta = requests.get(url, headers=headers, timeout=5)
-            tempo_ms = round(resposta.elapsed.total_seconds() * 1000)
-            status = resposta.status_code
+            latencia = int((time.time() - inicio) * 1000)
+            
             resultados.append({
-                "Operadora": operadora,
-                "Status_HTTP": status,
-                "Latencia_ms": tempo_ms,
-                "Erro": "Nenhum" if status == 200 else f"HTTP {status}"
+                "operadora": operadora,
+                "status_http": resposta.status_code,
+                "latencia_ms": latencia,
+                "erro_tecnico": "Nenhum" if resposta.status_code == 200 else f"HTTP {resposta.status_code}"
             })
+            print(f"  -> {operadora}: {latencia}ms")
         except requests.exceptions.RequestException as e:
             resultados.append({
-                "Operadora": operadora,
-                "Status_HTTP": 0,
-                "Latencia_ms": 5000,
-                "Erro": "Timeout/Inacessivel"
+                "operadora": operadora,
+                "status_http": 0,
+                "latencia_ms": 5000,
+                "erro_tecnico": "Timeout"
             })
+            print(f"  -> {operadora}: FALHA CRÍTICA")
     return resultados
 
-# ==========================================
-# INTEGRAÇÃO E PERSISTÊNCIA (Local e Nuvem)
-# ==========================================
-def salvar_e_enviar_dados(dados_tecnicos, df_sociais):
-    print("\n[PERSISTÊNCIA] Gerando arquivo JSON unificado...")
+def salvar_e_enviar_dados(dados_tecnicos, dados_sociais):
+    print("\n[PERSISTÊNCIA] Estruturando JSON com 27 estados e enviando para AWS...")
     os.makedirs('dados', exist_ok=True)
-    
-    ultima_linha_social = df_sociais.iloc[-1] if not df_sociais.empty else None
     
     payload = {
         "timestamp": datetime.now().isoformat(),
@@ -96,23 +109,10 @@ def salvar_e_enviar_dados(dados_tecnicos, df_sociais):
     }
     
     for item in dados_tecnicos:
-        op = item["Operadora"]
-        nome_coluna = f'Indice_Falha_{op}'
-        
-        # Correção do KeyError: Verifica se a coluna realmente existe antes de ler
-        if ultima_linha_social is not None and nome_coluna in ultima_linha_social:
-            indice_social = int(ultima_linha_social[nome_coluna])
-        else:
-            # Se ninguém reclamou no Google ou a coluna não existe, o índice é 0
-            indice_social = 0
-            
-        payload["telemetria"].append({
-            "operadora": op,
-            "status_http": item["Status_HTTP"],
-            "latencia_ms": item["Latencia_ms"],
-            "indice_social_falha": indice_social,
-            "erro_tecnico": item["Erro"]
-        })
+        op = item["operadora"]
+        # Injetamos o dicionário inteiro com os 28 valores (BR + 27 Estados) dentro da operadora
+        item["indices_sociais"] = dados_sociais[op]
+        payload["telemetria"].append(item)
         
     nome_arquivo = f"telemetria_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
     caminho_local = f"dados/{nome_arquivo}"
@@ -121,7 +121,6 @@ def salvar_e_enviar_dados(dados_tecnicos, df_sociais):
         json.dump(payload, f, ensure_ascii=False, indent=4)
     print(f"✅ Salvo localmente em: {caminho_local}")
     
-    print("\n[CLOUD] Iniciando upload para o Amazon S3...")
     try:
         s3_client = boto3.client(
             's3',
@@ -129,20 +128,15 @@ def salvar_e_enviar_dados(dados_tecnicos, df_sociais):
             aws_secret_access_key=os.getenv('AWS_SECRET_ACCESS_KEY'),
             region_name=os.getenv('AWS_REGION')
         )
-        
         bucket_name = os.getenv('S3_BUCKET_NAME')
         caminho_s3 = f"raw/{nome_arquivo}"
         
         s3_client.upload_file(caminho_local, bucket_name, caminho_s3)
-        print(f"🚀 SUCESSO! Arquivo enviado para s3://{bucket_name}/{caminho_s3}")
-        
+        print(f"🚀 SUCESSO! Arquivo S3: s3://{bucket_name}/{caminho_s3}")
     except Exception as e:
-        print(f"❌ Erro ao enviar para o S3: {e}")
+        print(f"❌ Erro S3: {e}")
 
-# ==========================================
-# EXECUÇÃO PRINCIPAL
-# ==========================================
 if __name__ == "__main__":
-    df_sociais = coletar_trends_nacional()
-    dados_tecnicos = coletar_latencia_tecnica()
-    salvar_e_enviar_dados(dados_tecnicos, df_sociais)
+    dados_sociais = coletar_telemetria_social()
+    dados_tecnicos = testar_ping_operadoras()
+    salvar_e_enviar_dados(dados_tecnicos, dados_sociais)
