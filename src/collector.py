@@ -63,26 +63,30 @@ def coletar_telemetria_social():
     return resultados_sociais
 
 def testar_ping_operadoras():
-    print("\n[SENSOR TÉCNICO] Iniciando testes de rede (TCP Socket Ping na Porta 53)...")
+    print("\n[SENSOR TÉCNICO] Iniciando testes de rede (TCP Socket Ping na Porta 443)...")
+    import socket 
+    import time
     
     alvos = {
-        "Vivo": {"alvo": "200.204.0.10", "porta": 53},
-        "Claro": {"alvo": "200.255.255.65", "porta": 53},
-        "TIM": {"alvo": "200.179.64.65", "porta": 53},
-        "Oi": {"alvo": "200.222.0.34", "porta": 53}
+        "Vivo": {"alvo": "www.vivo.com.br", "porta": 443},
+        "Claro": {"alvo": "www.claro.com.br", "porta": 443},
+        "TIM": {"alvo": "www.tim.com.br", "porta": 443},
+        "Oi": {"alvo": "www.oi.com.br", "porta": 443}
     }
     resultados = []
     
     for operadora, info in alvos.items():
-        ip = info["alvo"]     
+        dominio = info["alvo"]     
         porta = info["porta"] 
         
         try:
             inicio = time.time()
+            # Cria a conexão TCP
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             sock.settimeout(5)
             
-            sock.connect((ip, porta))
+            # Conecta na porta 443 e foge antes do HTTP agir!
+            sock.connect((dominio, porta))
             sock.close()
             
             latencia = int((time.time() - inicio) * 1000)
@@ -100,7 +104,7 @@ def testar_ping_operadoras():
                 "operadora": operadora,
                 "status_http": 0,
                 "latencia_ms": 5000,
-                "erro_tecnico": f"Falha de Rota no IP {ip}"
+                "erro_tecnico": f"Falha TCP no IP {dominio}"
             })
             print(f"  -> {operadora}: FALHA CRÍTICA ({e})")
             
