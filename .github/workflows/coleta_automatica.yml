@@ -10,8 +10,7 @@ on:
 
 jobs:
   coletar_dados:
-    runs-on: ubuntu-latest # O GitHub liga um Linux Ubuntu novinho
-
+    runs-on: self-hosted # Roda em um servidor que você controla (pode ser o seu PC, por exemplo)
     steps:
     - name: Baixar o código do repositório
       uses: actions/checkout@v3
