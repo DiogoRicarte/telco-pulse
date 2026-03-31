@@ -3,6 +3,7 @@ import boto3
 import json
 import os
 import pandas as pd
+import plotly.express as px
 from dotenv import load_dotenv
 from datetime import datetime, timedelta
 import requests
@@ -149,12 +150,120 @@ if dados:
                 with col_met1:
                     st.metric(label="Ping (ms)", value=latencia)
                 with col_met2:
-                    st.metric(label="Buscas", value=indice)
+                    # definindo 2 casas decimais para o indice de buscas
+                    st.metric(label="Buscas", value=f"{indice:.2f}")
 
     st.markdown("<hr style='margin: 20px 0px; border-color: #334155;'>", unsafe_allow_html=True)
     
+    with st.expander("Entenda as Métricas deste Painel"):
+        st.markdown("""
+    **Este painel cruza dados de infraestrutura física com inteligência de redes sociais para detectar apagões de telecomunicação.**
+    
+    * **Ping (ms):** Mede a saúde do "coração" da operadora. O robô testa a conexão TCP direta com os servidores centrais de DNS (Porta 443). Se falhar ou passar de 1000ms, o backbone principal pode ter caído.
+    * **Retorno:** Confirma se o pacote de dados conseguiu completar o aperto de mão (Handshake) com o servidor.
+    * **Buscas:** Termômetro social (OSINT). Representa a média da última hora do volume de buscas no Google por termos de falha (ex: "Vivo caiu"). Valores acima de 40 indicam problemas reais nas antenas 4G/5G, mesmo que o Ping físico esteja normal.
+    """)
+
+    st.markdown("<h3 style='color: #f8fafc; margin-top: 30px; margin-bottom: 20px; font-weight: 600;'>Visão Analítica de Incidentes</h3>", unsafe_allow_html=True)
+    
+    # --- PREPARAÇÃO DOS DADOS (POLIDA E ARREDONDADA) ---
+    estado_totais = {}
+    operadora_totais = {}
+    
+    for item in dados['telemetria']:
+        op = item['operadora']
+        sociais = item['indices_sociais']
+        
+        # Pega o valor da operadora para a rosca (baseado na região selecionada)
+        operadora_totais[op] = sociais.get(regiao_selecionada, 0)
+        
+        # Soma os problemas de todos os estados (ignorando o 'Nacional') para o ranking
+        for estado, valor in sociais.items():
+            if estado != 'Nacional':
+                estado_totais[estado] = estado_totais.get(estado, 0) + valor
+
+    # Prepara dados dos estados com Mapeamento Condicional de Risco
+    top5_estados = sorted(estado_totais.items(), key=lambda x: x[1], reverse=True)[:5]
+    df_top5 = pd.DataFrame(top5_estados, columns=['Estado', 'Volume'])
+    df_top5['Volume'] = df_top5['Volume'].round(1) # Arredonda para 1 casa decimal
+    
+    # Define categorias de risco de outage para a cor
+    def definir_risco(volume):
+        if volume > 60: return 'ALTO RISCO'
+        elif volume > 40: return 'MÉDIO RISCO'
+        else: return 'BAIXO RISCO'
+    df_top5['Risco'] = df_top5['Volume'].apply(definir_risco)
+
+    # Prepara dados das operadoras com Cálculo de Porcentagem
+    df_ops = pd.DataFrame(list(operadora_totais.items()), columns=['Operadora', 'Volume'])
+    total_volume_regiao = df_ops['Volume'].sum()
+    if total_volume_regiao > 0:
+        df_ops['Percentual'] = (df_ops['Volume'] / total_volume_regiao * 100).round(1).astype(str) + '%'
+    else:
+        df_ops['Percentual'] = '0.0%'
+    # Cria uma coluna limpa apenas com os números arredondados para mostrar na tabela
+    df_ops['VolumeLimp'] = df_ops['Volume'].round(0).astype(int) 
+
+    # --- DESENHANDO OS GRÁFICOS POLIDOS ---
+    col_graf1, col_graf2 = st.columns(2)
+    
+    # Dicionário de cores discretas para o risco
+    mapa_cores_risco = {'ALTO RISCO': '#ef4444', 'MÉDIO RISCO': '#facc15', 'BAIXO RISCO': '#4ade80'} # Vermelho, Amarelo, Verde
+    
+    with col_graf1:
+        # Gráfico de Barras Minimalista e Conditional
+        fig_bar = px.bar(
+            df_top5, x='Estado', y='Volume', 
+            text_auto=True, # Mostra o número cravado na barra
+            color='Risco', # Cor baseada na categoria de risco!
+            color_discrete_map=mapa_cores_risco # Usa o nosso dicionário de cores discretas
+        )
+        fig_bar.update_traces(textposition='outside', cliponaxis=False) # Número fora da barra
+        fig_bar.update_layout(
+            title=dict(text="Top 5 Estados Críticos", font=dict(size=16, color='#e2e8f0')),
+            plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)', 
+            xaxis=dict(showgrid=False, title=''), # Esconde linhas e títulos óbvios
+            yaxis=dict(showgrid=False, title='', showticklabels=False), # Esconde o eixo Y inteiro
+            margin=dict(l=0, r=0, t=40, b=0),
+            hovermode=False, # Desativa o tooltip já que o número está na tela
+            showlegend=False # Esconde a legenda do risco para não poluir
+        )
+        st.plotly_chart(fig_bar, use_container_width=True, config={'displayModeBar': False}) # Esconde o menu do Plotly
+        
+    with col_graf2:
+        # Gráfico Donut Centralizado mostrando APENAS Porcentagem
+        fig_donut = px.pie(
+            df_ops, values='Volume', names='Operadora', 
+            hole=0.6, # Furo maior deixa mais elegante
+            color='Operadora', color_discrete_map=cores_marcas,
+            custom_data=['Percentual'] # Passamos o percentual calculado como um dado extra
+        )
+        
+        # Aqui está a mágica do hovertemplate (Controla a caixinha do mouse)
+        fig_donut.update_traces(
+            textposition='inside', 
+            textinfo='percent',
+            hovertemplate="<b>%{label}</b><br>Participação: %{customdata[0]}<extra></extra>"
+        )
+        
+        fig_donut.update_layout(
+            title=dict(text=f"Impacto por Operadora ({regiao_selecionada})", font=dict(size=16, color='#e2e8f0')),
+            plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)',
+            showlegend=True, 
+            legend=dict(orientation="h", yanchor="bottom", y=-0.2, xanchor="center", x=0.5), # Legenda deitada na base!
+            margin=dict(l=0, r=0, t=40, b=20)
+        )
+        st.plotly_chart(fig_donut, use_container_width=True, config={'displayModeBar': False})
+
     with st.expander("Visualizar Base de Dados Bruta (S3 Lake)"):
-        st.dataframe(pd.DataFrame(df_view), use_container_width=True)
+        # Cria uma visualização limpa do DataFrame
+        df_view_limpo = pd.DataFrame(df_view)
+        
+        # Formata as colunas numéricas para arredondar antes de mostrar
+        st.dataframe(df_view_limpo.style.format({
+            "Ping (ms)": "{:.0f}",
+            f"Alertas ({regiao_selecionada})": "{:.1f}"
+        }), use_container_width=True)
 
 else:
     st.error("Não foi possível carregar os dados do Amazon S3.")
