@@ -5,7 +5,7 @@ import os
 import pandas as pd
 import plotly.express as px
 from dotenv import load_dotenv
-from datetime import datetime, timedelta
+from datetime import datetime, timezone, timedelta
 import requests
 
 load_dotenv()
@@ -412,14 +412,40 @@ if dados:
         ''', unsafe_allow_html=True)
     
     with kpi_cols[3]:
-        dt_coleta = datetime.fromisoformat(dados['timestamp']) - timedelta(hours=3)
-        tempo_atras = datetime.now() - dt_coleta
-        minutos = int(tempo_atras.total_seconds() / 60)
+        from datetime import timezone
+        
+        # 1. Pega a hora do arquivo
+        dt_coleta = datetime.fromisoformat(dados['timestamp'])
+        
+        # Garante que a data do arquivo seja tratada como UTC (padrão da nuvem)
+        if dt_coleta.tzinfo is None:
+            dt_coleta = dt_coleta.replace(tzinfo=timezone.utc)
+            
+        # Pega a hora exata de agora também em UTC (funciona no Streamlit e no seu Linux)
+        agora = datetime.now(timezone.utc)
+        
+        # Calcula a diferença absoluta
+        tempo_atras = agora - dt_coleta
+        minutos_totais = int(tempo_atras.total_seconds() / 60)
+        
+        # Prevenção contra bugs de fuso (evita números negativos)
+        minutos_totais = max(0, minutos_totais)
+        
+        # 2. Formata para o visual humano (UX)
+        horas, minutos = divmod(minutos_totais, 60)
+        
+        if horas > 0:
+            tempo_texto = f"{horas}h {minutos}m"
+            sub_texto = "Atrás · Coleta Automática"
+        else:
+            tempo_texto = f"{minutos}"
+            sub_texto = "Minutos Atrás · Coleta Automática"
+
         st.markdown(f'''
         <div class="kpi-card" style="border-left-color: #3b82f6;">
             <div class="kpi-label">Tempo dos Dados</div>
-            <div class="kpi-value" style="color: #3b82f6;">{minutos}</div>
-            <div class="kpi-change">Minutos Atrás · Coleta Automática</div>
+            <div class="kpi-value" style="color: #3b82f6;">{tempo_texto}</div>
+            <div class="kpi-change">{sub_texto}</div>
         </div>
         ''', unsafe_allow_html=True)
     
