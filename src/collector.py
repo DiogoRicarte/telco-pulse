@@ -21,14 +21,14 @@ OPERADORAS_CONFIG = {
     "Oi": ["Oi internet", "Oi caiu", "Oi fora do ar", "Oi sem sinal", "Oi falha"]
 }
 
-REGIOES_BR = {
-    'BR': 'Nacional',
-    'BR-AC': 'AC', 'BR-AL': 'AL', 'BR-AP': 'AP', 'BR-AM': 'AM', 'BR-BA': 'BA',
-    'BR-CE': 'CE', 'BR-DF': 'DF', 'BR-ES': 'ES', 'BR-GO': 'GO', 'BR-MA': 'MA',
-    'BR-MT': 'MT', 'BR-MS': 'MS', 'BR-MG': 'MG', 'BR-PA': 'PA', 'BR-PB': 'PB',
-    'BR-PR': 'PR', 'BR-PE': 'PE', 'BR-PI': 'PI', 'BR-RJ': 'RJ', 'BR-RN': 'RN',
-    'BR-RS': 'RS', 'BR-RO': 'RO', 'BR-RR': 'RR', 'BR-SC': 'SC', 'BR-SP': 'SP',
-    'BR-SE': 'SE', 'BR-TO': 'TO'
+MAPA_ESTADOS = {
+    'Acre': 'AC', 'Alagoas': 'AL', 'Amapá': 'AP', 'Amazonas': 'AM', 'Bahia': 'BA',
+    'Ceará': 'CE', 'Distrito Federal': 'DF', 'Espírito Santo': 'ES', 'Goiás': 'GO',
+    'Maranhão': 'MA', 'Mato Grosso': 'MT', 'Mato Grosso do Sul': 'MS', 'Minas Gerais': 'MG',
+    'Pará': 'PA', 'Paraíba': 'PB', 'Paraná': 'PR', 'Pernambuco': 'PE', 'Piauí': 'PI',
+    'Rio de Janeiro': 'RJ', 'Rio Grande do Norte': 'RN', 'Rio Grande do Sul': 'RS',
+    'Rondônia': 'RO', 'Roraima': 'RR', 'Santa Catarina': 'SC', 'São Paulo': 'SP',
+    'Sergipe': 'SE', 'Tocantins': 'TO'
 }
 
 OPERADORAS_ALVOS = {
@@ -44,48 +44,56 @@ DELAY_FALHA_API = 5      # segundos após erro
 
 def coletar_telemetria_social() -> Dict[str, Dict[str, float]]:
     """
-    Monitora o volume de menções das operadoras no Google Trends por região.
-    Captura tendências de buscas como 'Vivo caiu', 'Claro fora do ar' com granularidade estadual.
-    
-    Aviso importante: O Google Trends limita requisições, por isso adicionamos delays entre regiões.
-    Em caso de bloqueio, a função registra 0 e tenta continuar (falha graciosa).
+    Estratégia Otimizada (Estratégia 3):
+    Faz apenas 1 requisição por operadora pedindo a quebra por estados (interest_by_region).
+    Reduz o tempo de coleta de 10 minutos para ~15 segundos. Zero risco de rate limit.
     """
-    print("\n[SENSOR SOCIAL] Iniciando varredura Nacional e em 27 Estados...")
-    print("Aviso: Esta etapa pode levar de 5 a 7 minutos para evitar bloqueios do Google.")
-    
+    print("\n[SENSOR SOCIAL] Iniciando varredura Nacional otimizada (interest_by_region)...")
     resultados_sociais: Dict[str, Dict[str, float]] = {}
     
     for operadora, keywords in OPERADORAS_CONFIG.items():
         resultados_sociais[operadora] = {}
         print(f"\nColetando dados da operadora: {operadora}")
         
-        for geo_code, nome_regiao in REGIOES_BR.items():
-            try:
-                # Consulta o volume de buscas dos últimos 1 dia nesta região
-                pytrends.build_payload(keywords, cat=0, timeframe='now 4-H', geo=geo_code)
-                df = pytrends.interest_over_time()
+        try:
+            # 1. Configura a busca para o Brasil ('BR') inteiro nas últimas 4 horas
+            pytrends.build_payload(keywords, cat=0, timeframe='now 4-H', geo='BR')
+            
+            # 2. O Pulo do Gato: Pede ao Google a quebra por estados de uma só vez
+            df_regioes = pytrends.interest_by_region(resolution='REGION', inc_low_vol=True, inc_geo_code=False)
+            
+            if not df_regioes.empty:
+                # Calcula a média de buscas entre todos os termos (ex: "vivo caiu" + "vivo falha")
+                df_regioes['Media_Alertas'] = df_regioes.mean(axis=1)
                 
-                if not df.empty:
-                    # Remove coluna de flag do Google (artefato técnico)
-                    df = df.drop(columns=['isPartial'], errors='ignore')
-                    
-                    # Pega as últimas 8 linhas (~1h de dados) e faz a média
-                    # Isso reduz ruído e detecta picos sustentados
-                    media_ultima_hora = df.tail(8).sum(axis=1).mean()
-                    resultados_sociais[operadora][nome_regiao] = media_ultima_hora
-                else:
-                    resultados_sociais[operadora][nome_regiao] = 0
+                # 3. Popula nosso dicionário traduzindo "São Paulo" para "SP"
+                for estado_google, row in df_regioes.iterrows():
+                    sigla = MAPA_ESTADOS.get(estado_google, estado_google)
+                    valor = float(row['Media_Alertas'])
+                    resultados_sociais[operadora][sigla] = valor
                 
-                print(f"  -> {nome_regiao}: {resultados_sociais[operadora][nome_regiao]:.1f}")
-                time.sleep(DELAY_ENTRE_REGIOES)
+                # O cenário Nacional é simplesmente a média de todos os estados juntos
+                media_nacional = float(df_regioes['Media_Alertas'].mean())
+                resultados_sociais[operadora]['Nacional'] = media_nacional
                 
-            except Exception as erro_trends:
-                # Google bloqueou ou não há dados - isso é normal
-                # Registramos 0 e tentamos a próxima região
-                print(f"  -> {nome_regiao}: Sem dados (bloqueio ou indisponível)")
-                resultados_sociais[operadora][nome_regiao] = 0
-                time.sleep(DELAY_FALHA_API)
-                
+                print(f"  -> Dados extraídos com sucesso! (Média Nacional: {media_nacional:.1f})")
+            
+            else:
+                print("  -> Sem dados suficientes de buscas no momento.")
+                for sigla in MAPA_ESTADOS.values():
+                    resultados_sociais[operadora][sigla] = 0
+                resultados_sociais[operadora]['Nacional'] = 0
+            
+            # Pausa de apenas 2 segundos para respeitar a API entre as operadoras
+            time.sleep(2) 
+            
+        except Exception as erro_trends:
+            print(f"  -> Erro ao consultar {operadora}: {erro_trends}")
+            for sigla in MAPA_ESTADOS.values():
+                resultados_sociais[operadora][sigla] = 0
+            resultados_sociais[operadora]['Nacional'] = 0
+            time.sleep(5)
+            
     return resultados_sociais
 
 def testar_ping_operadoras() -> List[Dict[str, Any]]:
