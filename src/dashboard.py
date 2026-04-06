@@ -567,19 +567,22 @@ if dados:
     mapa_cores_risco = {'ALTO RISCO': '#ef4444', 'MÉDIO RISCO': '#f59e0b', 'BAIXO RISCO': '#10b981'}
     
     with col_graf1:
+        max_valor = df_top5['Volume'].max() if not df_top5.empty else 0
+        titulo_grafico = "Top 5 Estados Críticos" if max_valor >= 40 else "Nenhum Estado em Crise (Ruído Padrão)"
+
         fig_bar = px.bar(
             df_top5, x='Estado', y='Volume',
             text_auto=True,
             color='Risco',
             color_discrete_map=mapa_cores_risco,
-            title="Top 5 Estados Críticos"
+            title=titulo_grafico
         )
         fig_bar.update_traces(textposition='outside', cliponaxis=False)
         fig_bar.update_layout(
-            title=dict(text="Top 5 Estados Críticos", font=dict(size=16, color='#e2e8f0'), x=0),
+            title=dict(text=titulo_grafico, font=dict(size=15, color='#e2e8f0'), x=0),
             plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)',
             xaxis=dict(showgrid=False, title='', tickfont=dict(color='#94a3b8')),
-            yaxis=dict(showgrid=True, gridcolor='rgba(51, 65, 85, 0.2)', title='', showticklabels=False),
+            yaxis=dict(showgrid=True, gridcolor='rgba(51, 65, 85, 0.2)', title='', showticklabels=False, range=[0, 100]),
             margin=dict(l=0, r=0, t=40, b=0),
             hovermode=False,
             showlegend=False,
